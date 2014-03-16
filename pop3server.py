@@ -31,6 +31,9 @@ monitoring test %s
 """
 
 class POP3Backend(object):
+    """POP3 Backend Interface Class
+        this class defines the methods your Backend implementation should provide
+    """
     def __init__(self, protocol=None):
         """self.protocol represents handle to POP3Protocol attributes and methods"""
         self.protocol = protocol
@@ -54,6 +57,14 @@ class POP3Backend(object):
         raise POP3BackendException(u'overwrite class methods with implementation')
     
 class POP3Backend_IMAP(POP3Backend):
+    """IMAP based Backend
+    this backend provides the "translation" between POP3 and IMAP details as follows:
+    
+    * IMAP message -> converted -> ascii (flag ignore=just leave the character out of the Unicode result)
+    * IMAP INBOX messages only (if you filter move messages to subfolders they are not recognized by the Backend)
+    * POP3 -> plain text authentication only (as this is proxied to the remote)
+    * IMAP special user monitor, the user monitor with pwd monitor is used for unittesting and monitoring purpose
+    """
     def __init__(self, protocol=None, host=None, port=143, timeout=5.0):
         super(POP3Backend_IMAP, self).__init__(protocol)
         self.host   = host
@@ -72,6 +83,7 @@ class POP3Backend_IMAP(POP3Backend):
             return False
         return True
     def authenticate(self, username=None, password=None):
+        """try to proxy authenticate agains IMAP with POP3 given values"""
         if self.protocol._pop3user == 'monitor' and self.protocol._pop3pass == 'monitor':
             return True
         try:
@@ -87,6 +99,7 @@ class POP3Backend_IMAP(POP3Backend):
             self.state = str(e)
             self._imap = None
     def fetch(self):
+        """retrieve all messages from IMAP spool limited to 10 for testing"""
         if self.protocol._pop3user == 'monitor' and self.protocol._pop3pass == 'monitor':
             id = uuid5(NAMESPACE_DNS, str(time()))
             self.messages = [ POP3Message(content=monitormessage % (make_msgid(), formatdate(), id, id)) ] 
@@ -113,6 +126,7 @@ class POP3Backend_IMAP(POP3Backend):
             self.state = str(e)
             return False
     def delete(self, num=None):
+        """delete (==flag) message (num=xx) from IMAP spool"""
         if self.protocol._pop3user == 'monitor' and self.protocol._pop3pass == 'monitor': return True
         try:
             if self._imap == None:
@@ -129,6 +143,7 @@ class POP3Backend_IMAP(POP3Backend):
             self.state = str(e)
             return False
     def cleanup(self):
+        """purge all marked message from IMAP spool"""
         if self.protocol._pop3user == 'monitor' and self.protocol._pop3pass == 'monitor': return True
         try:
             if self._imap == None:
@@ -143,6 +158,7 @@ class POP3Backend_IMAP(POP3Backend):
             self.state = str(e)
             return False
     def revert(self):
+        """revert deleted (==flaged) message from IMAP spool"""
         if self.protocol._pop3user == 'monitor' and self.protocol._pop3pass == 'monitor': return True
         try:
             if self._imap == None:
@@ -158,6 +174,9 @@ class POP3Backend_IMAP(POP3Backend):
             return False
 
 class POP3Backend_IMAPS(POP3Backend_IMAP):
+    """IMAP based Backend using SSL as transport
+    currently no certificate hanlding is done, silently ignored
+    """
     def __init__(self, protocol=None, host=None, port=993, timeout=5.0):
         super(POP3Backend_IMAPS, self).__init__(protocol)
         self.host   = host
@@ -177,18 +196,27 @@ class POP3Backend_IMAPS(POP3Backend_IMAP):
         return True
 
 class MailboxLocker(object):
+    """POP3 Mailboxes are single connected, meaning if a user already authenticated successful all others
+    using the same credentials are not allowed to access the same spool. (this would be possible through the
+    backend but breaks POP3 protocol).
+    
+    """
     def __init__(self):
         self.mailboxes  = {}
         self._lock      = threading.Lock()
     def is_locked(self, name=None):
+        """return lock status of name=xx"""
         return self.mailboxes.get(name, False)
     def acquire(self):
+        """inline function to unique locking through all the threads"""
         return self._lock.acquire()
     def release(self):
+        """inline function to unique locking through all the threads"""
         try:    self._lock.release()
         except ThreadError: return False
         return True
     def acquire_mailbox(self, name=None):
+        """retrieve a lock for a specific mailbox name=xx"""
         self.acquire()
         m   = self.mailboxes.get(name, False)
         if m != False:  
@@ -198,6 +226,7 @@ class MailboxLocker(object):
         self.release()
         return True
     def release_mailbox(self, name=None):
+        """release the lock for a specific mailbox name=xx"""
         self.acquire()
         m   = self.mailboxes.get(name, False)
         if m == False:  
@@ -208,26 +237,34 @@ class MailboxLocker(object):
         return True
 
 class POP3Message(object):
+    """represents a POP3 Message to be displayed on the User MUA"""
     def __init__(self, content=None):
         if content != None:
             self.content = email.message_from_string(content)
         else:
             self.content    = None
     def get_headers(self):
+        """return only the headers of the messages"""
         return '\n'.join(self.content.values())
     def get_body(self):
+        """return the body of the message"""
         content = ''
         for payload in self.content.get_payload():
             content += str(payload)
         return content
     def as_string(self):
+        """return the complete message"""
         return self.content.as_string()
     def unique_id(self):
+        """return a unique ID (based upon POP3 impl. md5 sum of message content)"""
         return md5(str(self.content)).hexdigest()
     def __len__(self):
         return len(self.content.as_string())
 
 class POP3ServerProtocol(SocketServer.BaseRequestHandler):
+    """the POP3 Server protocol implementation
+        http://tools.ietf.org/html/rfc1081 and http://www.ietf.org/rfc/rfc1939.txt
+    """
     def setup(self):
         global Backend
         self.state      = u'authorization'
@@ -240,8 +277,10 @@ class POP3ServerProtocol(SocketServer.BaseRequestHandler):
         logger.debug(u'S: %s POP3 server ready' % OK)
         self.request.sendall(u'%s\r\n' % self.AUTHORIZATION())
     def AUTHORIZATION(self):
+        """the authorization or welcome banner"""
         return u'%s POP3 server ready' % OK
     def QUIT(self):
+        """quit transaction and session command"""
         global MLock
         if self.state not in (u'authorization', 'transaction', 'update'):  return u'%s POP3 invalid state for command %s' % (ERR, u'QUIT')
         if self.state == u'transaction':
@@ -252,11 +291,24 @@ class POP3ServerProtocol(SocketServer.BaseRequestHandler):
             MLock.release_mailbox(self._pop3user)
         return u'%s POP3 server signing off' % OK
     def STAT(self):
+        """stat command returns count and size of messages to the MUA"""
         if self.state not in (u'transaction', ):  return u'%s POP3 invalid state for command %s' % (ERR, u'STAT')
         if not self.__backend_fetch__():
             return u'%s %s' % (ERR, self.backend.state)
         return u'%s %d %d' % (OK, len(self.messages), self.__get_messagesize__())
     def LIST(self, msg=None):
+        """list command returns either one specific or without arguments a list of all messages enumerated and size
+        Examples::
+            C:    LIST
+            S:    +OK 2 messages (320 octets)
+            S:    1 120
+            S:    2 200
+            S:    .
+                  ...
+            C:    LIST 2
+            S:    +OK 2 200
+        
+        """
         if self.state not in (u'transaction', ):  return u'%s POP3 invalid state for command %s' % (ERR, u'LIST')
         if self.messages == []:
             if not self.__backend_fetch__():
@@ -272,6 +324,7 @@ class POP3ServerProtocol(SocketServer.BaseRequestHandler):
                 msg.append(u'%s %s' % (n, len(m))) 
             return u'%s %s (%s octets)\r\n%s\r\n.' % (OK, len(self.messages), self.__get_messagesize__(), '\r\n'.join(msg))
     def RETR(self, msg=None):
+        """retr command returns a complete specific message"""
         if self.state not in (u'transaction', ):  return u'%s POP3 invalid state for command %s' % (ERR, u'RETR')
         if self.messages == []:
             if not self.__backend_fetch__():
@@ -281,6 +334,7 @@ class POP3ServerProtocol(SocketServer.BaseRequestHandler):
             return u'%s no such message, only %s messages in maildrop' % (ERR, len(self.messages))
         return u'%s %s octets\r\n%s\r\n.' % (OK, len(content), unicode(content.as_string(), 'utf8').encode('ascii', 'ignore'))
     def DELE(self, msg=None):
+        """dele command removes a specific message from the spool"""
         if self.state not in (u'transaction', ):  return u'%s POP3 invalid state for command %s' % (ERR, u'DELE')
         if self.messages == []:
             if not self.__backend_fetch__():
@@ -293,9 +347,11 @@ class POP3ServerProtocol(SocketServer.BaseRequestHandler):
             return u'%s message %s already deleted' % (ERR, msg)
         return u'%s message %s deleted' % (OK, msg)
     def NOOP(self):
+        """noop command for idle connections to avoid tcp timeouts on firewalls or similar"""
         if self.state not in (u'transaction', ):  return u'%s POP3 invalid state for command %s' % (ERR, u'NOOP')
         return u'%s' % OK
     def RSET(self):
+        """rset command resets all actions taken by the MUA (dele os messages is reverted)"""
         if self.state not in (u'transaction', ):  return u'%s POP3 invalid state for command %s' % (ERR, u'RSET')
         if not self.__backend_revert__():
             return u'%s %s' % (ERR, self.backend.state)
@@ -304,6 +360,7 @@ class POP3ServerProtocol(SocketServer.BaseRequestHandler):
             return u'%s %s' % (ERR, self.backend.state)
         return u'%s maildrop has %s messages (%s octets)' % (OK, len(self.messages), self.__get_messagesize__())
     def TOP(self, msg=None, lines=None):
+        """top command returns from a specific message all headers plus n lines of the body"""
         if self.state not in (u'transaction', ):  return u'%s POP3 invalid state for command %s' % (ERR, u'TOP')
         if self.messages == []:
             if not self.__backend_fetch__():
@@ -314,6 +371,7 @@ class POP3ServerProtocol(SocketServer.BaseRequestHandler):
             return u'%s no such message %s' % (ERR, msg)
         return u'%s\r\n%s\r\n%s\r\n.' % (OK, content.get_headers(), '\r\n'.join(content.get_body().split('\n')[:lines]))
     def UIDL(self, msg=None):
+        """uidl command returns a spool unique message id based upon the md5 hashdigest of the message"""
         if self.state not in (u'transaction', ):  return u'%s POP3 invalid state for command %s' % (ERR, u'UIDL')
         if self.messages == []:
             if not self.__backend_fetch__():
@@ -327,10 +385,12 @@ class POP3ServerProtocol(SocketServer.BaseRequestHandler):
             content = self.__get_msg__(msg)
             return u'%s %s %s' % (OK, msg, content.unique_id())
     def USER(self, name=None):
+        """user command sets the user credentials part"""
         if self.state not in (u'authorization', ):  return u'%s POP3 invalid state for command %s' % (ERR, u'USER')
         self._pop3user = name
         return u'%s' % OK
     def PASS(self, credentials=None):
+        """pass command sets the password credentials part"""
         global MLock
         if self.state not in (u'authorization', ):  return u'%s POP3 invalid state for command %s' % (ERR, u'PASS')
         if credentials == None:
@@ -348,6 +408,12 @@ class POP3ServerProtocol(SocketServer.BaseRequestHandler):
             return u'%s unable to lock maildrop' % ERR
         return u'%s maildrop locked and ready' % OK
     def APOP(self, digest=None):
+        """apop command An alternate method of authentication is required which
+             provides for both origin authentication and replay
+             protection, but which does not involve sending a password
+             in the clear over the network.
+             
+             NOT implemented """
         if self.state not in (u'authorization', ):  return u'%s POP3 invalid state for command %s' % (ERR, u'APOP')
         return u'%s not implemented' % ERR
     def __get_msg__(self, num=None):
@@ -368,6 +434,7 @@ class POP3ServerProtocol(SocketServer.BaseRequestHandler):
     def __backend_revert__(self):
         return self.backend.revert()
     def handle(self):
+        """core routing to handle the MUA command requests"""
         while True:
             self.data   = self.request.recv(1024).strip()
             try:    
