@@ -16,7 +16,9 @@ ERR = u'-ERR'
 
 logger  = logging.getLogger('POP3Server')
 logger.addHandler(logging.StreamHandler(sys.stderr))
-logger.handlers[0].setFormatter(logging.Formatter(fmt='%(asctime)s [%(name)s.%(levelname)s %(lineno)d]: %(message)s'))
+logger.addHandler(logging.FileHandler('/tmp/pop3server.log'))
+for h in logger.handlers:
+    h.setFormatter(logging.Formatter(fmt='%(asctime)s [%(name)s.%(levelname)s %(lineno)d]: %(message)s'))
 logger.setLevel(logging.DEBUG)
 
 monitormessage = """Message-ID: %s
@@ -113,7 +115,7 @@ class POP3Backend_IMAP(POP3Backend):
             n   = int(n[0])
             if n == 0:  return True
             # limit for now
-            if n > 10:  n = 10
+            #if n > 10:  n = 10
             if n == 1:  n = 2
             for n in range(1, n):
                 logger.debug(u'IMAP: retrieve %s' % n)
@@ -460,7 +462,10 @@ class POP3ServerProtocol(SocketServer.BaseRequestHandler):
                     self.request.sendall(u'%s\r\n' % str(rsp))
                 else:
                     rsp = call(options)
-                    logger.debug(u'S: %s' % str(rsp))
+                    if cmd in ('RETR', ):
+                        logger.debug(u'S: %s' % str(rsp).split('\r\n')[0])
+                    else:
+                        logger.debug(u'S: %s' % str(rsp))
                     self.request.sendall(u'%s\r\n' % str(rsp))
                 if cmd == 'QUIT':   break
             else:
@@ -471,21 +476,8 @@ class POP3ServerProtocol(SocketServer.BaseRequestHandler):
 class ThreadedTCPServer(SocketServer.ThreadingMixIn, SocketServer.TCPServer):
     pass
 
-if __name__ == '__main__':
-    import sys
-    import optparse
-    parser  = optparse.OptionParser()
-    parser.add_option('-b', '--backend', action='store', default='IMAP')
-    parser.add_option('--backend_address', action='store')
-    parser.add_option('--backend_port', action='store', type=int, default=143)
-    parser.add_option('-l', '--listen', action='store', default='127.0.0.1')
-    parser.add_option('-p', '--port', action='store', type=int, default=110)
-    parser.add_option('-d', '--debug', action='store_true', default=False)
-
-    options, remainings = parser.parse_args()
-    if options.debug:
-        logger.setLevel(logging.DEBUG)
-    
+def main(options):
+    global Backend, MLock
     MLock   = MailboxLocker()
     if not options.backend.upper() in ('IMAP', 'IMAPS'):
         print u'supported Backends IMAP, IMAPS'
@@ -494,15 +486,53 @@ if __name__ == '__main__':
         BInterface = POP3Backend_IMAP
     else:
         BInterface = POP3Backend_IMAPS
+    logger.debug(u'using backend %s' % BInterface)
     Backend = BInterface(host=options.backend_address, port=options.backend_port)
-    try:    server = ThreadedTCPServer((options.listen, options.port), POP3ServerProtocol)
+    try:
+        logger.debug(u'using ThreadedTCPServer(%s:%s)' % (options.listen, options.port))    
+        server = ThreadedTCPServer((options.listen, options.port), POP3ServerProtocol)
     except IndexError:
         server = ThreadedTCPServer((options.listen, options.port), POP3ServerProtocol)
-    print u'serving POP3 service at %s:%s' % server.server_address
+    logger.info(u'serving POP3 service at %s:%s' % server.server_address)
     server_thread = threading.Thread(target=server.serve_forever)
     server_thread.daemon = True
     server_thread.start()
+    logger.debug(u'serving forever')
     try:    server.serve_forever()
     except KeyboardInterrupt:
         pass
     server.shutdown()
+    
+if __name__ == '__main__':
+    import sys
+    import optparse
+    import daemon
+    import lockfile
+    
+    Backend, MLock = None, None
+    parser  = optparse.OptionParser()
+    parser.add_option('-b', '--backend', action='store', default='IMAP')
+    parser.add_option('--backend_address', action='store')
+    parser.add_option('--backend_port', action='store', type=int, default=143)
+    parser.add_option('-l', '--listen', action='store', default='127.0.0.1')
+    parser.add_option('-p', '--port', action='store', type=int, default=110)
+    parser.add_option('-d', '--debug', action='store_true', default=False)
+    parser.add_option('--daemon', action='store_true', default=False)
+
+    options, remainings = parser.parse_args()
+    if options.debug:
+        logger.setLevel(logging.DEBUG)
+    
+    if options.daemon:
+        loghandlers = []
+        for h in logger.handlers:
+            loghandlers.append(h.stream)
+        with daemon.DaemonContext(working_directory='/tmp/',
+                                  pidfile=lockfile.FileLock(path='/tmp/pop3server.lock'),
+                                  files_preserve=loghandlers,
+                                  uid=99, gid=99,
+                                  ):
+            main(options)
+        logger.info(u'shutting down on request')
+    else:
+        main(options)
