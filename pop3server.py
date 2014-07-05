@@ -137,7 +137,7 @@ class POP3Backend_IMAP(POP3Backend):
             logger.debug(u'IMAP: setting +FLAGS: %s' % num)
             self._imap.store(num, '+FLAGS', '\\Seen \\Deleted')
             self.protocol._deleted.append(num)
-            del self.protocol.messages[num]
+            del self.protocol.messages[int(num) - 1]
             return True
         except Exception, e:
             logger.error(u'IMAP: delete: %s' % str(e))
